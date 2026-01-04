@@ -29,8 +29,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #if __has_include("Melopero_RV3028.h")
 #include "Melopero_RV3028.h"
 #endif
-#if __has_include("pcf8563.h")
-#include "pcf8563.h"
+#if __has_include("SensorRtcHelper.hpp")
+#include "SensorRtcHelper.hpp"
 #endif
 
 /* Offer chance for variant-specific defines */
@@ -123,6 +123,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define TX_GAIN_LORA 25
 #define SX126X_MAX_POWER 8
 #endif
+
+// #ifdef EBYTE_E22_400M33S
+// // 25dB PA gain and 33dB rated output; based on TX Power Curve from E22-900M33S_UserManual_EN_v1.0.pdf
+// #define TX_GAIN_LORA 12
+// #define SX126X_MAX_POWER 21
+// #endif
 
 #ifdef NICERF_MINIF27
 // Note that datasheet power level of 9 corresponds with SX1262 at 22dBm
