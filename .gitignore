@@ -50,3 +50,5 @@ idf_component.yml
 CMakeLists.txt
 sdkconfig.*
 .dummy/*
+tool
+tools

@@ -90,6 +90,10 @@ uint16_t TFT_MESH = COLOR565(0x67, 0xEA, 0x94);
 #include "input/cardKbI2cImpl.h"
 #endif
 
+#if OLED_CN
+#include <utf8_12x12.h>
+#endif
+
 using namespace meshtastic; /** @todo remove */
 
 namespace graphics
@@ -643,7 +647,11 @@ void Screen::setup()
     }
 #endif
 
-    // Generate device ID from MAC address
+#ifdef OLED_CN
+    dispdev->setUtf8Font(&utf8_12x12_font);
+#endif
+
+    // === Generate device ID from MAC address ===
     uint8_t dmac[6];
     getMacAddr(dmac);
     snprintf(screen->ourId, sizeof(screen->ourId), "%02x%02x", dmac[4], dmac[5]);
