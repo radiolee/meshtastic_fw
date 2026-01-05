@@ -7,6 +7,7 @@
 #include "main.h"
 #include <Arduino.h>
 #include <vector>
+#include <pinyin_simple_backend.h>
 
 namespace graphics
 {
@@ -34,6 +35,10 @@ void VirtualKeyboard::initializeKeyboard()
     constexpr int LAYOUT_COLS = (int)(sizeof(LAYOUT[0]) / sizeof(LAYOUT[0][0]));
     static_assert(LAYOUT_ROWS == KEYBOARD_ROWS, "LAYOUT rows must equal KEYBOARD_ROWS");
     static_assert(LAYOUT_COLS == KEYBOARD_COLS, "LAYOUT cols must equal KEYBOARD_COLS");
+
+    selectList = "";
+    selectListLayout = {};
+    selectListOffset = 0;
 
     // Initialize all keys to empty first
     for (int row = 0; row < LAYOUT_ROWS; row++) {
@@ -196,19 +201,35 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     // Header uses the standard small (which may be larger on big screens)
     display->setFont(FONT_SMALL);
     int headerHeight = 0;
-    if (!headerText.empty()) {
+    int chineseArea = (IMEStatus == ACTIVE) ? 12 : 0;
+    if (!headerText.empty() && IMEStatus == INACTIVE) {
         // Draw header and reserve exact font height (plus a tighter gap) to maximize input area
         display->drawString(offsetX + 2, offsetY, headerText.c_str());
-        if (screenHeight <= 64) {
-            headerHeight = FONT_HEIGHT_SMALL - 2; // 11px
-        } else {
-            headerHeight = FONT_HEIGHT_SMALL; // no extra padding baked in
-        }
+        // On very small screens (e.g., 128x64), push the input box as close as possible to the header
+        headerHeight = FONT_HEIGHT_SMALL; // no extra padding baked in
     }
 
-    const int boxX = offsetX;
-    const int boxWidth = screenWidth;
-    int boxY;
+    // Input box - from below header down to just above the keyboard
+    const int boxX = offsetX + 2;
+    // Smaller gap below header on tiny screens, slightly larger otherwise
+    const int gapBelowHeader = (screenHeight <= 64 ? 0 : 1);
+    int boxY = offsetY + headerHeight + gapBelowHeader;
+    const int boxWidth = screenWidth - 4;
+    // Ensure the box doesn't touch the keyboard: prefer a bigger guard gap on 64px screens
+    int gapAboveKeyboard = (screenHeight <= 64 ? 3 : 1);
+    // Minimum box height to fully contain one text line with 1px padding on top and bottom
+    const int minBoxHeight = inputLineH + 2;
+    int availableH = keyboardStartY - boxY - gapAboveKeyboard; // initial available height
+    if (screenHeight <= 64 && availableH < minBoxHeight) {
+        // Try to grow the box by reducing the gap above keyboard, but keep at least 1px separation
+        int need = minBoxHeight - availableH;
+        int canReduce = gapAboveKeyboard - 1;
+        int reduce = std::min(need, canReduce);
+        if (reduce > 0) {
+            gapAboveKeyboard -= reduce;
+            availableH = keyboardStartY - boxY - gapAboveKeyboard;
+        }
+    }
     int boxHeight;
     if (screenHeight <= 64) {
         const int gapBelowHeader = 0;
@@ -236,6 +257,45 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
     display->drawRect(boxX, boxY, boxWidth, boxHeight);
 
     display->setFont(FONT_SMALL);
+
+    // Chinese selecting area display
+
+    if (IMEStatus == ACTIVE && !inputText.empty()) {
+        std::string currentPinyin = inputText.substr(processedWords, inputText.length() - processedWords);
+        uint8_t gotChars = 0;
+        uint8_t copiedBytes = 0;
+        selectList = "";
+        selectListLayout = {};
+        char *resultptr = pinyin_simple_search(currentPinyin.c_str());
+        std::string List = (resultptr == NULL) ? "" : resultptr;
+        selectListfulllen = List.length();
+        std::string str = List.substr(selectListOffset);
+        while (selectListfulllen != 0 && gotChars < 9) {
+            uint8_t bytesToCopy;
+            if (str.length() <= copiedBytes) {
+                break;
+            }
+            bytesToCopy = getUtf8Length(str.c_str(), copiedBytes);
+            if (cursorCol == gotChars) {
+                uint8_t width = display->getStringWidth(selectList.c_str(), selectList.length(), true);//screen->getCJKwidth(display, selectList.c_str());
+                display->drawHorizontalLine(width, boxHeight, 12);     // display the current selected word.
+                display->drawHorizontalLine(width, boxHeight + 1, 12); // double underline cuz i'm short-sighted.
+            }
+            selectList.append(str.substr(copiedBytes, bytesToCopy));
+            selectListLayout.push_back(bytesToCopy);
+            copiedBytes += bytesToCopy;
+            gotChars++;
+        }
+        display->drawString(display->width() - 10, boxHeight - chineseArea, ">");
+        if (cursorCol == 9) {
+            display->drawHorizontalLine(display->width() - 10, boxHeight,
+                                        display->getStringWidth(">")); // display the current selected word.
+            display->drawHorizontalLine(display->width() - 10, boxHeight + 1,
+                                        display->getStringWidth(">")); // double underline cuz i'm short-sighted.
+        }
+        selectableChars = gotChars;
+        display->drawString(0, boxHeight - chineseArea, selectList.c_str()); // FIXME:support multiple pages.
+    }
 
     // Text rendering: multi-line if space allows (>= 2 lines), else single-line with leading ellipsis
     const int textX = boxX + 2;
@@ -631,9 +691,24 @@ void VirtualKeyboard::handleLongPress()
     resetTimeout(); // Reset timeout on any input activity
 
     const VirtualKey &key = keyboard[cursorRow][cursorCol];
+    // directly enter what cursor selected instead of enter digits.
+    if (IMEStatus == ACTIVE && cursorCol <= 8) {
+        selectChineseChar(cursorCol);
+        return;
+    }
+
+    if (IMEStatus == ACTIVE && cursorCol == 9) {
+        showNextSelection();
+        return;
+    }
 
     // Don't handle press if the key is empty (but allow special keys)
     if (key.character == 0 && key.type == VK_CHAR) {
+        return;
+    }
+
+    if (key.character == '1') {
+        insertCharacter('/');
         return;
     }
 
@@ -659,9 +734,10 @@ void VirtualKeyboard::handleLongPress()
         insertCharacter(' ');
         break;
     case VK_ESC:
-        if (onTextEntered) {
-            onTextEntered("");
-        }
+        //if (onTextEntered) {
+        //    onTextEntered("");
+        //}
+		toggleIME();
         break;
     default:
         break;
@@ -670,8 +746,27 @@ void VirtualKeyboard::handleLongPress()
 
 void VirtualKeyboard::insertCharacter(char c)
 {
-    if (inputText.length() < 160) { // Reasonable text length limit
-        inputText += c;
+    if (IMEStatus == ACTIVE) {
+        if (c >= '1' && c <= '9' && !selectList.empty()) { // digits for chinese selection
+            selectChineseChar(cursorCol);
+        } else if (c >= 'a' && c <= 'z') { // pinyin input
+            if (selectListOffset != 0)
+                selectListOffset = 0; // reset offset when input more chars.
+            inputText += c;
+            inputTextLayout.push_back(1);
+        } else if (c == '0') {
+            showNextSelection();
+        } else if (inputText.length() == processedWords) { // not in pinyin selection mode
+            inputText += c;
+            inputTextLayout.push_back(1);
+            processedWords++; // let it go.
+        }
+    } else {
+        if (inputText.length() < 160) { // Reasonable text length limit
+            inputText += c;
+            inputTextLayout.push_back(1);
+            processedWords++; // not in ime mode so let it go.
+        }
     }
 }
 
@@ -735,6 +830,69 @@ void VirtualKeyboard::resetTimeout()
 bool VirtualKeyboard::isTimedOut() const
 {
     return (millis() - lastActivityTime) > TIMEOUT_MS;
+}
+
+void VirtualKeyboard::toggleIME()
+{
+    if (IMEStatus == ACTIVE) { // reset vars
+        selectList = "";
+        selectListLayout = {};
+        selectListOffset = 0;
+    } else {
+        processedWords = inputText.length(); // mark previous chars as processed
+    }
+    IMEStatus == ACTIVE ? IMEStatus = INACTIVE : IMEStatus = ACTIVE;
+}
+
+uint8_t VirtualKeyboard::getUtf8Length(const char *c, uint8_t pos)
+{
+    uint8_t byte1 = (uint8_t)c[pos];
+
+    if (byte1 < 0x80) {
+        // ASCII character
+        return 1;
+    } else if ((byte1 & 0xE0) == 0xC0) {
+        // 2-byte UTF-8
+        return 2;
+    } else if ((byte1 & 0xF0) == 0xE0) {
+        // 3-byte UTF-8 (most CJK characters)
+        return 3;
+    } else if ((byte1 & 0xF8) == 0xF0) {
+        // 4-byte UTF-8
+        return 4;
+    }
+    return 0;
+}
+
+uint8_t VirtualKeyboard::getChineseChar(uint8_t c)
+{
+    int ret = 0;
+    for (int i = 0; i < c; i++) { // consecutively extract bytes
+        ret += selectListLayout[i];
+    }
+    return ret;
+}
+
+void VirtualKeyboard::selectChineseChar(uint8_t chridx)
+{
+    if (chridx > selectableChars)
+        return; // make sure it won't overflow.
+    int pinyinLength = inputText.length() - processedWords;
+    inputText.erase(inputText.length() - pinyinLength, inputText.length());
+    inputTextLayout.erase(inputTextLayout.end() - pinyinLength, inputTextLayout.end());
+    std::string word = selectList.substr(getChineseChar(chridx), selectListLayout[chridx]);
+    inputText.append(word);
+    uint8_t charLength = getUtf8Length(word.c_str(), 0);
+    inputTextLayout.push_back(charLength);
+    processedWords += charLength;
+    selectListOffset = 0;
+}
+
+void VirtualKeyboard::showNextSelection()
+{
+    uint8_t listlen = selectList.length();
+    uint8_t nextOffset = selectListOffset + listlen;
+    selectListOffset = nextOffset >= selectListfulllen ? 0 : nextOffset;
 }
 
 } // namespace graphics
