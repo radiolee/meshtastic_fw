@@ -24,7 +24,11 @@ VirtualKeyboard::~VirtualKeyboard() {}
 
 void VirtualKeyboard::initializeKeyboard()
 {
-    // New 4 row, 11 column keyboard layout:
+    // New 4-row layout with 10 characters + 1 action key per row (11 columns):
+    // 1) 1 2 3 4 5 6 7 8 9 0 BACK
+    // 2) q w e r t y u i o p ENTER
+    // 3) a s d f g h j k l ; SPACE
+    // 4) z x c v b n m . , ? ESC
     static const char LAYOUT[KEYBOARD_ROWS][KEYBOARD_COLS] = {{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '\b'},
                                                               {'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '\n'},
                                                               {'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', ' '},
@@ -460,8 +464,9 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
             if (cursorH < 1)
                 cursorH = 1;
 
-            if (cursorX < innerLeft || cursorX > innerRight)
-                return;
+        // Only draw if cursor is inside inner bounds
+        if (cursorX >= innerLeft && cursorX <= innerRight) 
+            display->drawVerticalLine(cursorX, cursorTop, cursorH - chineseArea);
         }
 
         display->drawVerticalLine(cursorX, cursorTop, cursorH);
@@ -478,11 +483,10 @@ void VirtualKeyboard::drawKey(OLEDDisplay *display, const VirtualKey &key, bool 
     std::string keyText;
     if (key.type == VK_BACKSPACE || key.type == VK_ENTER || key.type == VK_SPACE || key.type == VK_ESC) {
         // Keep literal text labels for the action keys on the rightmost column
-        keyText = (key.type == VK_BACKSPACE) ? "BACK"
-                  : (key.type == VK_ENTER)   ? "ENTER"
-                  : (key.type == VK_SPACE)   ? "SPACE"
-                  : (key.type == VK_ESC)     ? "ESC"
-                                             : "";
+        keyText = (key.type == VK_BACKSPACE) ? "BACK" : (key.type == VK_ENTER) ? "ENTER" : (key.type == VK_SPACE) ? "SPACE" : "";
+        if (key.type == VK_ESC) {
+            keyText = (IMEStatus == ACTIVE) ? "CN ESC" : "EN ESC";
+        }
     } else {
         char c = getCharForKey(key, false);
         if (c >= 'a' && c <= 'z') {
@@ -784,6 +788,10 @@ void VirtualKeyboard::submitText()
     // Only submit if text is not empty
     if (!inputText.empty() && onTextEntered) {
         // Store callback and text to submit before clearing callback
+        selectList = "";
+        selectListLayout = {};
+        selectListOffset = 0;
+
         std::function<void(const std::string &)> callback = onTextEntered;
         std::string textToSubmit = inputText;
         onTextEntered = nullptr;
